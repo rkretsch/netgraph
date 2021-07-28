@@ -3,6 +3,7 @@
 
 import warnings
 import numpy as np
+import math
 import matplotlib
 import matplotlib.pyplot as plt
 
@@ -2144,6 +2145,11 @@ class DraggableArtists(object):
         self._control_is_held = False
         self._currently_clicking_on_artist = False
         self._currently_dragging = False
+
+        self._rotate_on = False
+        self._show = True
+        #self._groups = 
+
         self._currently_selecting = False
         self._selected_artists = []
         self._offset = dict()
@@ -2188,7 +2194,7 @@ class DraggableArtists(object):
                     else:
                         # print("Clicked on new artist.")
                         # the user wants to select artist and drag
-                        if not self._control_is_held:
+                        if not self._control_is_held and not self._rotate_on:
                             self._deselect_all_artists()
                         self._select_artist(artist)
 
@@ -2202,11 +2208,15 @@ class DraggableArtists(object):
 
             else:
                 # print("Did not click on artist.")
-                if not self._control_is_held:
+                if not self._control_is_held and not self._rotate_on:
                     self._deselect_all_artists()
 
                 # start window select
-                self._currently_selecting = True
+                if not self._rotate_on:
+                    self._currently_selecting = True
+                if self._rotate_on:
+                    self._rotate(event)
+                    self._currently_selecting = True
 
         else:
             print("Warning: clicked outside axis limits!")
@@ -2231,7 +2241,7 @@ class DraggableArtists(object):
 
         elif self._currently_clicking_on_artist:
 
-            if (self._clicked_artist is not None) & (self._currently_dragging is False):
+            if (self._clicked_artist is not None) & (self._currently_dragging is False) & (not self._rotate_on):
                 if self._control_is_held:
                     self._toggle_select_artist(self._clicked_artist)
                 else:
@@ -2245,30 +2255,89 @@ class DraggableArtists(object):
     def _on_motion(self, event):
         if event.inaxes:
             if self._currently_clicking_on_artist:
+                if self._rotate_on:
+                    self._currently_dragging = True
+                    self._rotate(event)
+                else:
+                    self._currently_dragging = True
+                    self._move(event)
+            elif self._rotate_on:
                 self._currently_dragging = True
-                self._move(event)
+                self._rotate(event)
             elif self._currently_selecting:
                 self._x1 = event.xdata
                 self._y1 = event.ydata
                 # add rectangle for selection here
                 self._selector_on()
 
-
     def _move(self, event):
         cursor_position = np.array([event.xdata, event.ydata])
         for artist in self._selected_artists:
             artist.xy = cursor_position + self._offset[artist]
         self.fig.canvas.draw_idle()
-
+    
+    def _rotate(self, event):
+        cursor_position = np.array([event.xdata, event.ydata])
+        sum_x = 0
+        sum_y = 0
+        num_points = len(self._selected_artists)
+        for i in range(num_points):
+            sum_x += self._selected_artists[i].xy[0]
+            sum_y += self._selected_artists[i].xy[1]
+        centroid = [sum_x/num_points, sum_y/num_points]
+        ref_point = self._selected_artists[-1].xy
+        ba = cursor_position - centroid
+        bc = ref_point - centroid
+        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+        angle = np.arccos(cosine_angle)
+        for artist in self._selected_artists:
+            x = centroid[0] + np.cos(angle) * (artist.xy[0] - centroid[0]) - np.sin(angle) * (artist.xy[1] - centroid[1])
+            y = centroid[1] + np.sin(angle) * (artist.xy[0] - centroid[0]) + np.cos(angle) * (artist.xy[1] - centroid[1])
+            artist.xy =  np.array([x,y])
+        self.fig.canvas.draw_idle()
 
     def _on_key_press(self, event):
        if event.key == 'control':
            self._control_is_held = True
+       elif event.key == 'x':
+            if self._show:
+                for artist in self._draggable_artists:
+                    if artist in self._selected_artists:
+                        artist.set_alpha(self._base_alpha[artist])
+                    else:
+                        artist.set_alpha(self._base_alpha[artist]/5)
+                    self._selected_artists[0].set_alpha(self._base_alpha[self._selected_artists[0]]/1.5)
+            else:
+               for artist in self._draggable_artists:
+                    artist.set_alpha(self._base_alpha[artist])    
+            self._show = not self._show
+       elif event.key == 'alt':
+            self._rotate_on = True
+       #TODO
+       '''elif event.key == 'n':
+            self._groups = [[0,1,2,3],[20,21,22,26]]
+            self._current_group_selected = None
+            if self._groups != []:
+                if self._current_group_selected is None:
+                    self._current_group_selected = self._groups[0]
+                else:
+                    self._current_group_selected = self._groups[1+self._groups.index(self._current_group_selected)]
+                self._selected_artists = [self._node_to_draggable_artist[node] for node in self._current_group_selected]
+                for artist in self._draggable_artists:
+                    if artist in self._selected_artists:
+                        artist.set_alpha(self._base_alpha[artist])
+                    else:
+                        artist.set_alpha(self._base_alpha[artist]/5)
+                    self._selected_artists[0].set_alpha(self._base_alpha[self._selected_artists[0]]/1.5)
+        '''
+
 
 
     def _on_key_release(self, event):
        if event.key == 'control':
            self._control_is_held = False
+       elif event.key == 'alt':
+            self._rotate_on = False
 
 
     def _is_inside_rect(self, x, y):
@@ -2360,6 +2429,48 @@ class DraggableGraph(Graph, DraggableArtists):
             self._update_edge_label_positions(edges)
 
         self.fig.canvas.draw_idle()
+
+    def _rotate(self, event):
+        cursor_position = np.array([event.xdata, event.ydata])
+
+        nodes = self._get_stale_nodes()
+        sum_x = 0
+        sum_y = 0
+        num_points = len(nodes)
+        for node in nodes:
+            sum_x += self.node_positions[node][0]
+            sum_y += self.node_positions[node][1]
+        ref_point = self.node_positions[nodes[-1]]
+        centroid = [sum_x/num_points, sum_y/num_points]
+        ba = cursor_position - centroid
+        bc = ref_point - centroid
+        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+        angle = np.arccos(cosine_angle)
+
+        for node in nodes:
+            x = centroid[0] + np.cos(angle) * (self.node_positions[node][0] - centroid[0]) - np.sin(angle) * (self.node_positions[node][1] - centroid[1])
+            y = centroid[1] + np.sin(angle) * (self.node_positions[node][0] - centroid[0]) + np.cos(angle) * (self.node_positions[node][1] - centroid[1])
+            self.node_positions[node] =  np.array([x,y]) #+ point_from_line[node]#+ self._offset[self.node_artists[node]]
+        self._update_node_artists(nodes)
+
+        if hasattr(self, 'node_label_artists'):
+            self._update_node_label_positions()
+
+        edges = self._get_stale_edges(nodes)
+        # In the interest of speed, we only compute the straight edge paths here.
+        # We will re-compute other edge layouts only on mouse button release,
+        # i.e. when the dragging motion has stopped.
+        edge_paths = dict()
+        edge_paths.update(self._update_straight_edge_paths([(source, target) for (source, target) in edges if source != target]))
+        edge_paths.update(self._update_selfloop_paths([(source, target) for (source, target) in edges if source == target]))
+        self.edge_paths.update(edge_paths)
+        self._update_edge_artists(edge_paths)
+
+        if hasattr(self, 'edge_label_artists'):
+            self._update_edge_label_positions(edges)
+
+        self.fig.canvas.draw_idle()
+
 
 
     def _get_stale_nodes(self):
